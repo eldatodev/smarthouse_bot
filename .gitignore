@@ -1,0 +1,13 @@
+# .gitignore
+
+# Credenciales y configuración sensible
+.env
+
+# Base de datos local de SQLite
+*.db
+motos_chatbot.db
+
+# Entorno virtual de Python
+venv/
+__pycache__/
+*.pyc
