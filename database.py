@@ -2,6 +2,7 @@
 import sqlite3
 import os
 from typing import Any, Dict, Optional
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 # Cargar variables de entorno del archivo .env
@@ -19,15 +20,13 @@ class MotosDAO:
         with self._conectar() as conn:
             cursor = conn.cursor()
             
-            # 🔥 SOLUCIÓN DEFINITIVA: Tumba la tabla vieja para limpiar esquemas corruptos
-            cursor.execute("DROP TABLE IF EXISTS clientes;")
-            
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS clientes (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     wid TEXT NOT NULL,
                     nombre TEXT,
                     estado TEXT NOT NULL DEFAULT 'INICIO',
+                    estado_anterior TEXT,
                     ciudad TEXT,
                     tipo_cupo TEXT,
                     gasto_transporte TEXT,
@@ -42,12 +41,14 @@ class MotosDAO:
             conn.commit()
 
     def obtener_cliente(self, wid: str) -> Optional[Dict[str, Any]]:
-        """Trae únicamente la sesión comercial que esté ACTIVA (1) actualmente."""
+        """Trae únicamente la sesión comercial activa (1) o evalúa si está en atención manual (bloqueo del bot)."""
         with self._conectar() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
+            
+            # Buscamos la última sesión registrada en general para el usuario
             cursor.execute(
-                "SELECT * FROM clientes WHERE wid = ? AND activa = 1 ORDER BY id DESC LIMIT 1", 
+                "SELECT * FROM clientes WHERE wid = ? ORDER BY id DESC LIMIT 1", 
                 (wid,)
             )
             row = cursor.fetchone()
@@ -55,7 +56,22 @@ class MotosDAO:
                 cliente = dict(row)
                 cliente['reportado'] = bool(cliente['reportado']) if cliente['reportado'] is not None else None
                 cliente['necesita_agente'] = bool(cliente['necesita_agente'])
-                return cliente
+                
+                # Si la sesión no está activa pero requiere agente, validamos si fue en las últimas 24 horas
+                if not cliente['activa'] and cliente['necesita_agente']:
+                    if cliente.get('ultima_interaccion'):
+                        try:
+                            ultima_vez = datetime.strptime(cliente['ultima_interaccion'], "%Y-%m-%d %H:%M:%S")
+                            if datetime.now() - ultima_vez < timedelta(hours=24):
+                                # Retorna el cliente en un estado virtual para silenciar al bot
+                                cliente['estado'] = "ATENCION_MANUAL"
+                                return cliente
+                        except ValueError:
+                            pass
+                
+                # Si la sesión está activa (1), la retorna normalmente
+                if cliente['activa']:
+                    return cliente
             return None
 
     def obtener_clientes_en_proceso(self) -> list[Dict[str, Any]]:

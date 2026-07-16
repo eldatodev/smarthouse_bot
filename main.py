@@ -1,10 +1,11 @@
 import asyncio
 import threading
 import os
-import requests
+import httpx
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 from dotenv import load_dotenv
-from chatbot_logic import procesar_mensaje
+from chatbot_logic import procesar_mensaje, verificar_inactividad_proactiva_loop
 from database import MotosDAO
 
 # Forzar la carga de variables de entorno
@@ -12,16 +13,29 @@ basedir = os.path.dirname(os.path.abspath(__file__))
 ruta_env = os.path.join(basedir, ".env")
 load_dotenv(dotenv_path=ruta_env)
 
-app = FastAPI(title="Chatbot Motos Webhook API")
-
 # Carga de variables de entorno
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "token_por_defecto_123")
 PORT_APP = int(os.getenv("PORT", 8050))
 
-def enviar_mensaje_whatsapp_real(to_wid: str, texto_bot: str):
-    """Realiza la petición HTTP POST de salida hacia la API Cloud de Meta."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Iniciar bucle proactivo como tarea en segundo plano al arrancar la aplicación
+    task = asyncio.create_task(verificar_inactividad_proactiva_loop(enviar_mensaje_whatsapp_real))
+    print("🚀 Motor proactivo de inactividad iniciado en background.")
+    yield
+    # Cancelar tarea al apagar la aplicación
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+app = FastAPI(title="Chatbot Motos Webhook API", lifespan=lifespan)
+
+async def enviar_mensaje_whatsapp_real(to_wid: str, texto_bot: str):
+    """Realiza la petición HTTP POST de salida hacia la API Cloud de Meta de forma asíncrona."""
     if not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
         print("⚠️ Advertencia: Credenciales no configuradas en el .env")
         return
@@ -46,12 +60,12 @@ def enviar_mensaje_whatsapp_real(to_wid: str, texto_bot: str):
     }
     
     try:
-        # Usamos json=payload para que requests se encargue de la serialización correcta
-        response = requests.post(url, json=payload, headers=headers)
-        if response.status_code != 200:
-            print(f"❌ Error API WhatsApp Meta Saliente ({response.status_code}): {response.text}")
-        else:
-            print(f"📤 Respuesta enviada exitosamente a: {wid_limpio}")
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, headers=headers)
+            if response.status_code != 200:
+                print(f"❌ Error API WhatsApp Meta Saliente ({response.status_code}): {response.text}")
+            else:
+                print(f"📤 Respuesta enviada exitosamente a: {wid_limpio}")
     except Exception as e:
         print(f"❌ Error crítico en la petición HTTP saliente: {e}")
 
@@ -59,7 +73,44 @@ async def manejar_flujo_async(wid: str, mensaje: str, nombre: str):
     """Procesamiento en background para no bloquear el Webhook."""
     resultado = await procesar_mensaje(wid, mensaje, nombre)
     if resultado and "texto" in resultado:
-        enviar_mensaje_whatsapp_real(wid, resultado["texto"])
+        # 1. Enviar respuesta al cliente
+        await enviar_mensaje_whatsapp_real(wid, resultado["texto"])
+        
+        # 2. Si el lead fue calificado y necesita agente, notificar al asesor
+        if resultado.get("necesita_agente"):
+            asesor_number = os.getenv("ASESOR_NUMBER")
+            if asesor_number:
+                db = MotosDAO()
+                cliente = db.obtener_cliente(wid)
+                if cliente:
+                    wid_limpio = wid.replace("@c.us", "")
+                    enlace_chat = f"https://wa.me/{wid_limpio}"
+                    
+                    info_adicional = ""
+                    if cliente.get("gasto_transporte"):
+                        info_adicional = (
+                            f"\n📍 *Ciudad:* {cliente.get('ciudad', '').title()}"
+                            f"\n💳 *Cupo Recibo:* {cliente.get('tipo_cupo')}"
+                            f"\n🚌 *Gasto Transporte:* {cliente.get('gasto_transporte')}"
+                        )
+                    elif cliente.get("tiempo_entrega"):
+                        info_adicional = (
+                            f"\n📍 *Ciudad:* {cliente.get('ciudad', '').title()}"
+                            f"\n💳 *Cupo Recibo:* {cliente.get('tipo_cupo')}"
+                            f"\n⏱️ *Tiempo Entrega:* {cliente.get('tiempo_entrega')}"
+                        )
+                        
+                    msg_asesor = (
+                        f"🔔 *¡NUEVO LEAD CALIFICADO!*\n\n"
+                        f"👤 *Cliente:* {cliente.get('nombre', nombre)}\n"
+                        f"📱 *Numero:* {wid_limpio}"
+                        f"{info_adicional}\n\n"
+                        f"💬 *Chat Directo:* {enlace_chat}"
+                    )
+                    
+                    # Notificar al asesor comercial configurado
+                    print(f"📞 [NOTIFICACIÓN ASESOR] Notificando nuevo lead al asesor comercial: {asesor_number}")
+                    await enviar_mensaje_whatsapp_real(f"{asesor_number}@c.us", msg_asesor)
 
 # --- ENDPOINTS ---
 
