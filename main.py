@@ -2,11 +2,14 @@ import asyncio
 import threading
 import os
 import httpx
+import hmac
+import hashlib
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 from dotenv import load_dotenv
 from chatbot_logic import procesar_mensaje, verificar_inactividad_proactiva_loop
 from database import MotosDAO
+from chatwoot_client import ChatwootClient
 
 # Forzar la carga de variables de entorno
 basedir = os.path.dirname(os.path.abspath(__file__))
@@ -18,6 +21,25 @@ WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "token_por_defecto_123")
 PORT_APP = int(os.getenv("PORT", 8050))
+APP_SECRET = os.getenv("APP_SECRET")
+RUN_SIMULATOR = os.getenv("RUN_SIMULATOR", "False").lower() in ("true", "1", "t")
+
+async def verificar_firma(request: Request) -> bool:
+    """Verifica que la petición provenga realmente de los servidores de Meta."""
+    if not APP_SECRET:
+        # Permitir pasar si no está configurado en el .env (por ejemplo en local o desarrollo)
+        return True
+    firma_cabecera = request.headers.get("X-Hub-Signature-256")
+    if not firma_cabecera or not firma_cabecera.startswith("sha256="):
+        return False
+    sha_recibido = firma_cabecera.split("=")[1]
+    cuerpo = await request.body()
+    sha_calculado = hmac.new(
+        APP_SECRET.encode("utf-8"),
+        cuerpo,
+        hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(sha_calculado, sha_recibido)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -76,39 +98,51 @@ async def manejar_flujo_async(wid: str, mensaje: str, nombre: str):
         # 1. Enviar respuesta al cliente
         await enviar_mensaje_whatsapp_real(wid, resultado["texto"])
         
-        # 2. Si el lead fue calificado y necesita agente, notificar al asesor
+        # 2. Si el lead fue calificado y necesita agente, integrarlo con Chatwoot y notificar
         if resultado.get("necesita_agente"):
-            asesor_number = os.getenv("ASESOR_NUMBER")
-            if asesor_number:
-                db = MotosDAO()
-                cliente = db.obtener_cliente(wid)
-                if cliente:
-                    wid_limpio = wid.replace("@c.us", "")
-                    enlace_chat = f"https://wa.me/{wid_limpio}"
-                    
-                    info_adicional = ""
-                    if cliente.get("gasto_transporte"):
-                        info_adicional = (
-                            f"\n📍 *Ciudad:* {cliente.get('ciudad', '').title()}"
-                            f"\n💳 *Cupo Recibo:* {cliente.get('tipo_cupo')}"
-                            f"\n🚌 *Gasto Transporte:* {cliente.get('gasto_transporte')}"
-                        )
-                    elif cliente.get("tiempo_entrega"):
-                        info_adicional = (
-                            f"\n📍 *Ciudad:* {cliente.get('ciudad', '').title()}"
-                            f"\n💳 *Cupo Recibo:* {cliente.get('tipo_cupo')}"
-                            f"\n⏱️ *Tiempo Entrega:* {cliente.get('tiempo_entrega')}"
-                        )
-                        
-                    msg_asesor = (
-                        f"🔔 *¡NUEVO LEAD CALIFICADO!*\n\n"
-                        f"👤 *Cliente:* {cliente.get('nombre', nombre)}\n"
-                        f"📱 *Numero:* {wid_limpio}"
-                        f"{info_adicional}\n\n"
-                        f"💬 *Chat Directo:* {enlace_chat}"
+            db = MotosDAO()
+            cliente = await asyncio.to_thread(db.obtener_cliente, wid)
+            if cliente:
+                wid_limpio = wid.replace("@c.us", "")
+                enlace_chat = f"https://wa.me/{wid_limpio}"
+                
+                info_adicional = ""
+                if cliente.get("gasto_transporte"):
+                    info_adicional = (
+                        f"\n📍 *Ciudad:* {cliente.get('ciudad', '').title()}"
+                        f"\n💳 *Cupo Recibo:* {cliente.get('tipo_cupo')}"
+                        f"\n🚌 *Gasto Transporte:* {cliente.get('gasto_transporte')}"
+                    )
+                elif cliente.get("tiempo_entrega"):
+                    info_adicional = (
+                        f"\n📍 *Ciudad:* {cliente.get('ciudad', '').title()}"
+                        f"\n💳 *Cupo Recibo:* {cliente.get('tipo_cupo')}"
+                        f"\n⏱️ *Tiempo Entrega:* {cliente.get('tiempo_entrega')}"
                     )
                     
-                    # Notificar al asesor comercial configurado
+                msg_asesor = (
+                    f"🔔 *¡NUEVO LEAD CALIFICADO!*\n\n"
+                    f"👤 *Cliente:* {cliente.get('nombre', nombre)}\n"
+                    f"📱 *Numero:* {wid_limpio}"
+                    f"{info_adicional}\n\n"
+                    f"💬 *Chat Directo:* {enlace_chat}"
+                )
+                
+                # --- INTEGRACIÓN CON CHATWOOT ---
+                chatwoot = ChatwootClient()
+                contact_id = await chatwoot.buscar_o_crear_contacto(wid, cliente.get('nombre', nombre))
+                if contact_id:
+                    conv_id = await chatwoot.crear_conversacion(contact_id)
+                    if conv_id:
+                        await chatwoot.enviar_nota_privada(conv_id, msg_asesor)
+
+                # Cambiar a estado ATENCION_MANUAL para silenciar el bot mientras el humano atiende
+                await asyncio.to_thread(db.guardar_progreso_cliente, wid, estado="ATENCION_MANUAL")
+                print(f"🤝 [HANDOVER] Lead {wid} derivado a Chatwoot y puesto en ATENCION_MANUAL.")
+
+                # Notificar adicionalmente al WhatsApp personal del asesor si está configurado
+                asesor_number = os.getenv("ASESOR_NUMBER")
+                if asesor_number:
                     print(f"📞 [NOTIFICACIÓN ASESOR] Notificando nuevo lead al asesor comercial: {asesor_number}")
                     await enviar_mensaje_whatsapp_real(f"{asesor_number}@c.us", msg_asesor)
 
@@ -124,27 +158,90 @@ def verificar_webhook(request: Request):
 
 @app.post("/webhook")
 async def recibir_mensaje_real(request: Request, background_tasks: BackgroundTasks):
-    datos = await request.json()
+    if not await verificar_firma(request):
+        return Response(content="Firma de webhook inválida", status_code=401)
+
     try:
-        entry = datos.get("entry", [{}])[0]
-        changes = entry.get("changes", [{}])[0]
-        value = changes.get("value", {})
+        datos = await request.json()
+        
+        # Soporte para payload directo de BuilderBot
+        if "from" in datos and "body" in datos and "entry" not in datos:
+            from_num = str(datos["from"])
+            wid = f"{from_num}@c.us" if not from_num.endswith("@c.us") else from_num
+            nombre = datos.get("name", datos.get("pushName", "Cliente"))
+            texto_usuario = datos.get("body", "")
+            if texto_usuario:
+                background_tasks.add_task(manejar_flujo_async, wid, texto_usuario, nombre)
+                return {"status": "success"}
+
+        entries = datos.get("entry", [])
+        if not entries:
+            return {"status": "no entries"}
+        entry = entries[0]
+        
+        changes = entry.get("changes", [])
+        if not changes:
+            return {"status": "no changes"}
+        change = changes[0]
+        
+        value = change.get("value", {})
         
         if "messages" in value:
-            obj_msg = value["messages"][0]
-            contacto = value.get("contacts", [{}])[0]
+            messages = value.get("messages", [])
+            if not messages:
+                return {"status": "no messages"}
+            obj_msg = messages[0]
+            
+            contacts = value.get("contacts", [])
+            contacto = contacts[0] if contacts else {}
+            
             wid = f"{obj_msg['from']}@c.us"
             nombre = contacto.get("profile", {}).get("name", "Cliente")
             
             texto_usuario = obj_msg.get("text", {}).get("body", "")
             if not texto_usuario and "interactive" in obj_msg:
-                texto_usuario = obj_msg["interactive"]["button_reply"]["title"]
+                interactive = obj_msg["interactive"]
+                if "button_reply" in interactive:
+                    texto_usuario = interactive["button_reply"]["title"]
+                elif "list_reply" in interactive:
+                    texto_usuario = interactive["list_reply"]["title"]
                 
             if texto_usuario:
                 background_tasks.add_task(manejar_flujo_async, wid, texto_usuario, nombre)
         
     except Exception as e:
         print(f"❌ Error procesando JSON: {e}")
+    return {"status": "success"}
+
+@app.post("/webhook/chatwoot")
+async def recibir_webhook_chatwoot(request: Request):
+    """Escucha eventos de Chatwoot (ej. resolución de conversaciones) para reactivar el bot."""
+    try:
+        datos = await request.json()
+        event = datos.get("event")
+        
+        # Eventos cuando la conversación es resuelta o reabierta
+        if event in ("conversation_resolved", "conversation_status_changed"):
+            meta = datos.get("meta", {})
+            sender = datos.get("sender", {})
+            phone_number = sender.get("phone_number") or meta.get("sender", {}).get("phone_number")
+            
+            if not phone_number and "conversation" in datos:
+                conv = datos["conversation"]
+                phone_number = conv.get("meta", {}).get("sender", {}).get("phone_number")
+
+            if phone_number:
+                wid_limpio = phone_number.replace("+", "").replace("@c.us", "")
+                wid = f"{wid_limpio}@c.us"
+                
+                estado_nuevo = datos.get("status") or datos.get("conversation", {}).get("status")
+                if event == "conversation_resolved" or estado_nuevo == "resolved":
+                    db = MotosDAO()
+                    await asyncio.to_thread(db.cerrar_y_crear_nueva_sesion, wid)
+                    await asyncio.to_thread(db.guardar_progreso_cliente, wid, estado="INICIO")
+                    print(f"🔄 [CHATWOOT WEBHOOK] Conversación resuelta en Chatwoot para {wid}. Bot reactivado en estado INICIO.")
+    except Exception as e:
+        print(f"❌ Error procesando webhook de Chatwoot: {e}")
     return {"status": "success"}
 
 # --- SIMULADOR CONSOLA ---
@@ -156,7 +253,7 @@ async def simulador_consola():
     WID_PRUEBA = "573019998877@c.us"
     NOMBRE_PRUEBA = "Carlos"
     db = MotosDAO()
-    db.cerrar_y_crear_nueva_sesion(WID_PRUEBA)
+    await asyncio.to_thread(db.cerrar_y_crear_nueva_sesion, WID_PRUEBA)
     inicio = await procesar_mensaje(WID_PRUEBA, "", NOMBRE_PRUEBA)
     print(f"\n🤖 Bot: {inicio['texto']}\n")
     while True:
@@ -168,7 +265,9 @@ async def simulador_consola():
         except: break
 
 if __name__ == "__main__":
-    thread_consola = threading.Thread(target=ejecutar_bucle_simulador, daemon=True)
-    thread_consola.start()
+    if RUN_SIMULATOR:
+        thread_consola = threading.Thread(target=ejecutar_bucle_simulador, daemon=True)
+        thread_consola.start()
+        print("🎮 Simulador de consola iniciado.")
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT_APP)

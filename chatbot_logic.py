@@ -61,18 +61,15 @@ async def _extraer_ciudad(texto_usuario: str) -> Optional[str]:
     if not texto_lc or not texto_lc.strip():
         return None
 
-    # Intentar coincidencia exacta en la lista de ciudades válidas
-    palabras = texto_lc.split()
-    for ciudad in CIUDADES_VALIDAS:
-        # Si la ciudad consta de múltiples palabras (ej. "puerto colombia", "campo de la cruz")
-        if ciudad in texto_lc:
-            print(f"   [Filtro Python] Coincidencia por subcadena: '{ciudad}'")
+    # Ordenar por longitud descendente para evaluar nombres compuestos antes de simples (ej. "puerto colombia" antes de "puerto")
+    ciudades_ordenadas = sorted(CIUDADES_VALIDAS, key=len, reverse=True)
+
+    for ciudad in ciudades_ordenadas:
+        # Usar límites de palabra para evitar falsos positivos (como "campo" en "estoy en el campo")
+        patron = rf"\b{re.escape(ciudad)}\b"
+        if re.search(patron, texto_lc):
+            print(f"   [Filtro Python] Coincidencia por expresión regular (palabra completa): '{ciudad}'")
             return ciudad
-        # Si coincide con alguna palabra individual
-        for palabra in palabras:
-            if palabra == ciudad:
-                print(f"   [Filtro Python] Coincidencia por palabra exacta: '{ciudad}'")
-                return ciudad
     return None
 
 
@@ -164,12 +161,12 @@ async def _detectar_afirmacion(texto_usuario: str) -> bool:
 # =====================================================================
 async def procesar_mensaje(wid: str, mensaje_usuario: Optional[str], nombre_wa: str) -> Dict[str, Any]:
     db = MotosDAO()
-    cliente: Optional[Dict[str, Any]] = db.obtener_cliente(wid)
+    cliente: Optional[Dict[str, Any]] = await asyncio.to_thread(db.obtener_cliente, wid)
     ahora_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     if not cliente:
-        db.guardar_progreso_cliente(wid, nombre=nombre_wa, estado="INICIO", ultima_interaccion=ahora_str)
-        cliente = db.obtener_cliente(wid)
+        await asyncio.to_thread(db.guardar_progreso_cliente, wid, nombre=nombre_wa, estado="INICIO", ultima_interaccion=ahora_str)
+        cliente = await asyncio.to_thread(db.obtener_cliente, wid)
 
     texto_input = (mensaje_usuario or "").strip()
     estados_finales = ["RECHAZADO", "TIEMPO_ENTREGA", "BRILLA_DILO"]
@@ -180,14 +177,14 @@ async def procesar_mensaje(wid: str, mensaje_usuario: Optional[str], nombre_wa: 
             ultima_vez = datetime.strptime(cliente['ultima_interaccion'], "%Y-%m-%d %H:%M:%S")
             if datetime.now() - ultima_vez > TIMEOUT_INACTIVIDAD:
                 print(f"⏱️ [TIMEOUT PASIVO] {wid} superó las 2 horas. Reiniciando sesión.")
-                db.cerrar_y_crear_nueva_sesion(wid)
-                db.guardar_progreso_cliente(wid, nombre=nombre_wa, estado="INICIO", ultima_interaccion=ahora_str)
-                cliente = db.obtener_cliente(wid)
+                await asyncio.to_thread(db.cerrar_y_crear_nueva_sesion, wid)
+                await asyncio.to_thread(db.guardar_progreso_cliente, wid, nombre=nombre_wa, estado="INICIO", ultima_interaccion=ahora_str)
+                cliente = await asyncio.to_thread(db.obtener_cliente, wid)
         except ValueError:
             pass
 
     # Actualizar estampa de tiempo de la interacción entrante
-    db.guardar_progreso_cliente(wid, ultima_interaccion=ahora_str)
+    await asyncio.to_thread(db.guardar_progreso_cliente, wid, ultima_interaccion=ahora_str)
     estado_actual = cliente['estado']
 
     # --- CONTROL DE ATENCIÓN MANUAL (HANDOVER) ---
@@ -196,8 +193,8 @@ async def procesar_mensaje(wid: str, mensaje_usuario: Optional[str], nombre_wa: 
         return {}
 
     if any(keyword in texto_input.lower() for keyword in RESET_KEYWORDS):
-        db.cerrar_y_crear_nueva_sesion(wid)
-        db.guardar_progreso_cliente(wid, nombre=nombre_wa, estado="INICIO", ultima_interaccion=ahora_str)
+        await asyncio.to_thread(db.cerrar_y_crear_nueva_sesion, wid)
+        await asyncio.to_thread(db.guardar_progreso_cliente, wid, nombre=nombre_wa, estado="INICIO", ultima_interaccion=ahora_str)
         return {"texto": "Listo, empecemos de nuevo. ¿En qué ciudad te encuentras?"}
 
     # --- ESTADO: RECORDATORIO_ENVIADO (Si responde tras el aviso de inactividad) ---
@@ -206,9 +203,9 @@ async def procesar_mensaje(wid: str, mensaje_usuario: Optional[str], nombre_wa: 
         estado_previo = cliente.get('estado_anterior') or "INICIO"
         
         # Restauramos el estado y procesamos el mensaje entrante en el contexto de ese estado previo
-        db.guardar_progreso_cliente(wid, estado=estado_previo, estado_anterior=None, ultima_interaccion=ahora_str)
+        await asyncio.to_thread(db.guardar_progreso_cliente, wid, estado=estado_previo, estado_anterior=None, ultima_interaccion=ahora_str)
         # Volvemos a obtener el objeto de cliente actualizado
-        cliente = db.obtener_cliente(wid)
+        cliente = await asyncio.to_thread(db.obtener_cliente, wid)
         estado_actual = cliente['estado']
         print(f"⏱️ [PROACTIVO] Sesión de {wid} restaurada al estado previo: {estado_actual}")
         # NO hacemos return; dejamos que el flujo continúe evaluando el mensaje del usuario en el estado restaurado.
@@ -220,12 +217,12 @@ async def procesar_mensaje(wid: str, mensaje_usuario: Optional[str], nombre_wa: 
 
         ciudad_detectada = await _extraer_ciudad(texto_input)
         if ciudad_detectada:
-            db.guardar_progreso_cliente(wid, ciudad=ciudad_detectada, estado="TIPO_CUPO")
+            await asyncio.to_thread(db.guardar_progreso_cliente, wid, ciudad=ciudad_detectada, estado="TIPO_CUPO")
             guion = f"¡Perfecto! Al estar en {ciudad_detectada.title()}, podemos ayudarte. Ahora cuéntame: ¿Cuentas con cupo disponible en tu recibo del agua?"
             texto_final = _obtener_respuesta_comercial(texto_input, guion)
             return {"texto": texto_final, "botones": ["Soy Titular", "Familiar", "No cupo"]}
 
-        db.guardar_progreso_cliente(wid, estado="FUERA_ZONA")
+        await asyncio.to_thread(db.guardar_progreso_cliente, wid, estado="FUERA_ZONA")
         guion = "Lo siento, por ahora solo operamos en Barranquilla y el departamento del Atlántico. Si quieres corregir tu ubicación, escribe 'reiniciar'. 📍"
         texto_final = _obtener_respuesta_comercial(texto_input, guion)
         return {"texto": texto_final}
@@ -251,12 +248,12 @@ async def procesar_mensaje(wid: str, mensaje_usuario: Optional[str], nombre_wa: 
             tipo_cupo = texto_input
 
         if tipo_cupo == "No cupo":
-            db.guardar_progreso_cliente(wid, tipo_cupo="No cupo", estado="NO_CUPO")
+            await asyncio.to_thread(db.guardar_progreso_cliente, wid, tipo_cupo="No cupo", estado="NO_CUPO")
             guion = "Entiendo, amigo. También manejamos excelentes opciones con entidades financieras aliadas. Pero antes de seguir, cuéntame: ¿Te encuentras reportado en centrales de riesgo o Datacrédito?"
             texto_final = _obtener_respuesta_comercial(texto_input, guion)
             return {"texto": texto_final, "botones": ["Sí, estoy reportado", "No, estoy limpio"]}
 
-        db.guardar_progreso_cliente(wid, tipo_cupo=tipo_cupo, estado="TRANSP")
+        await asyncio.to_thread(db.guardar_progreso_cliente, wid, tipo_cupo=tipo_cupo, estado="TRANSP")
         guion = "¡Excelente! Para brindarte la mejor asesoría, cuéntame un poco sobre tu rutina: ¿Cuánto te estás gastando aproximadamente al día en transporte (buses, moto-taxis, etc.)?"
         texto_final = _obtener_respuesta_comercial(texto_input, guion)
         return {"texto": texto_final, "botones": ["10k-15k", "15k-20k", "+20k"]}
@@ -265,7 +262,7 @@ async def procesar_mensaje(wid: str, mensaje_usuario: Optional[str], nombre_wa: 
     if estado_actual == "TRANSP":
         rango = await _clasificar_transporte(texto_input)
         if rango:
-            db.guardar_progreso_cliente(wid, gasto_transporte=rango, estado="BRILLA_DILO", necesita_agente=1)
+            await asyncio.to_thread(db.guardar_progreso_cliente, wid, gasto_transporte=rango, estado="BRILLA_DILO", necesita_agente=1)
             guion = "¡Wow! Estás gastando bastante dinero en transporte público. Con ese mismo dinero diario podrías estar pagando la cuota de tu propia moto nueva y dejar de regalar la plata. Ya mismo le pasé tus datos a uno de nuestros asesores comerciales para que te contacte y te ayude con el proceso. ¡Pronto te hablaremos! 🏍️"
             texto_final = _obtener_respuesta_comercial(texto_input, guion)
             return {"texto": texto_final, "necesita_agente": True}
@@ -278,19 +275,19 @@ async def procesar_mensaje(wid: str, mensaje_usuario: Optional[str], nombre_wa: 
     if estado_actual == "NO_CUPO":
         esta_reportado = await _detectar_afirmacion(texto_input)
         if esta_reportado:
-            db.guardar_progreso_cliente(wid, reportado=1, estado="RECHAZADO")
+            await asyncio.to_thread(db.guardar_progreso_cliente, wid, reportado=1, estado="RECHAZADO")
             guion = "Entiendo, amigo. Lamentablemente en este momento no podemos procesar solicitudes de crédito financiero si cuentas con reportes activos en centrales de riesgo. Te invitamos a regularizar tu situación y volver a consultarnos en el futuro. ¡Muchas gracias por tu interés!"
             texto_final = _obtener_respuesta_comercial(texto_input, guion)
             return {"texto": texto_final}
 
-        db.guardar_progreso_cliente(wid, reportado=0, estado="BANCA")
+        await asyncio.to_thread(db.guardar_progreso_cliente, wid, reportado=0, estado="BANCA")
         guion = "¡Buenísimo que estés limpio! Podemos explorar el crédito por medio de nuestros aliados financieros bancarios. Cuéntame, ¿qué tan pronto te gustaría tener rodando tu moto nueva?"
         texto_final = _obtener_respuesta_comercial(texto_input, guion)
         return {"texto": texto_final, "botones": ["Hoy mismo", "Esta semana", "El próximo mes"]}
 
     # --- ESTADO: BANCA ---
     if estado_actual == "BANCA":
-        db.guardar_progreso_cliente(wid, tiempo_entrega=texto_input, estado="TIEMPO_ENTREGA", necesita_agente=1)
+        await asyncio.to_thread(db.guardar_progreso_cliente, wid, tiempo_entrega=texto_input, estado="TIEMPO_ENTREGA", necesita_agente=1)
         guion = "¡Perfecto! Ya registré tu interés. Uno de nuestros asesores comerciales especializados se comunicará contigo vía telefónica para validar tus opciones de crédito, estudiar el perfil y concretar la entrega de tu moto. ¡Muchas gracias por confiar en nosotros! 🚀"
         texto_final = _obtener_respuesta_comercial(texto_input, guion)
         return {"texto": texto_final, "necesita_agente": True}
@@ -299,7 +296,7 @@ async def procesar_mensaje(wid: str, mensaje_usuario: Optional[str], nombre_wa: 
     if estado_actual == "FUERA_ZONA":
         ciudad_detectada = await _extraer_ciudad(texto_input)
         if ciudad_detectada:
-            db.guardar_progreso_cliente(wid, ciudad=ciudad_detectada, estado="TIPO_CUPO")
+            await asyncio.to_thread(db.guardar_progreso_cliente, wid, ciudad=ciudad_detectada, estado="TIPO_CUPO")
             guion = f"¡Perfecto! Al estar en {ciudad_detectada.title()}, podemos ayudarte. Ahora cuéntame: ¿Cuentas con cupo disponible en tu recibo del agua?"
             texto_final = _obtener_respuesta_comercial(texto_input, guion)
             return {"texto": texto_final, "botones": ["Soy Titular", "Familiar", "No cupo"]}
@@ -331,7 +328,7 @@ async def verificar_inactividad_proactiva_loop(enviar_mensaje_whatsapp_callback)
         ahora = datetime.now()
         
         # Trae todos los leads abiertos (clientes que NO estén en estados finales)
-        clientes_activos = db.obtener_clientes_en_proceso() 
+        clientes_activos = await asyncio.to_thread(db.obtener_clientes_en_proceso)
         
         for cliente in clientes_activos:
             wid = cliente['wid']
@@ -346,7 +343,8 @@ async def verificar_inactividad_proactiva_loop(enviar_mensaje_whatsapp_callback)
                 
                 # REGLA 1: Lleva más de 15 minutos en silencio y está en un estado intermedio regular
                 if tiempo_silencio > timedelta(minutes=15) and estado != "RECORDATORIO_ENVIADO":
-                    db.guardar_progreso_cliente(
+                    await asyncio.to_thread(
+                        db.guardar_progreso_cliente,
                         wid, 
                         estado="RECORDATORIO_ENVIADO", 
                         estado_anterior=estado, 
@@ -359,8 +357,8 @@ async def verificar_inactividad_proactiva_loop(enviar_mensaje_whatsapp_callback)
 
                 # REGLA 2: Ya se le envió el recordatorio, pasaron otros 15 minutos de silencio (30 en total) y no contestó
                 elif tiempo_silencio > timedelta(minutes=15) and estado == "RECORDATORIO_ENVIADO":
-                    db.cerrar_y_crear_nueva_sesion(wid)
-                    db.guardar_progreso_cliente(wid, estado="INICIO", ultima_interaccion=ahora.strftime("%Y-%m-%d %H:%M:%S"))
+                    await asyncio.to_thread(db.cerrar_y_crear_nueva_sesion, wid)
+                    await asyncio.to_thread(db.guardar_progreso_cliente, wid, estado="INICIO", ultima_interaccion=ahora.strftime("%Y-%m-%d %H:%M:%S"))
                     
                     msg = "Veo que estás ocupado. Aquí estaré cuando decidas volver. ¡Feliz día! 🏍️"
                     await enviar_mensaje_whatsapp_callback(wid, msg)

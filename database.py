@@ -38,6 +38,7 @@ class MotosDAO:
                     activa INTEGER DEFAULT 1
                 )
             """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_clientes_wid ON clientes (wid)")
             conn.commit()
 
     def obtener_cliente(self, wid: str) -> Optional[Dict[str, Any]]:
