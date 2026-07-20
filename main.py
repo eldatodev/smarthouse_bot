@@ -23,6 +23,9 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "token_por_defecto_123")
 PORT_APP = int(os.getenv("PORT", 8050))
 APP_SECRET = os.getenv("APP_SECRET")
 RUN_SIMULATOR = os.getenv("RUN_SIMULATOR", "False").lower() in ("true", "1", "t")
+BASE_URL = os.getenv("BASE_URL", "http://localhost:8050")
+WEBHOOK_META_PATH = os.getenv("WEBHOOK_META_PATH", "/webhook")
+WEBHOOK_CHATWOOT_PATH = os.getenv("WEBHOOK_CHATWOOT_PATH", "/webhook/chatwoot")
 
 async def verificar_firma(request: Request) -> bool:
     """Verifica que la petición provenga realmente de los servidores de Meta."""
@@ -46,6 +49,8 @@ async def lifespan(app: FastAPI):
     # Iniciar bucle proactivo como tarea en segundo plano al arrancar la aplicación
     task = asyncio.create_task(verificar_inactividad_proactiva_loop(enviar_mensaje_whatsapp_real))
     print("🚀 Motor proactivo de inactividad iniciado en background.")
+    print(f"🔗 Webhook Meta activo en: {BASE_URL}{WEBHOOK_META_PATH}")
+    print(f"🔗 Webhook Chatwoot activo en: {BASE_URL}{WEBHOOK_CHATWOOT_PATH}")
     yield
     # Cancelar tarea al apagar la aplicación
     task.cancel()
@@ -152,7 +157,7 @@ async def manejar_flujo_async(wid: str, mensaje: str, nombre: str):
 def leer_ruta():
     return {"status": "ok", "mensaje": "Motor Smarthouse-Bot Activo"}
 
-@app.get("/webhook")
+@app.get(WEBHOOK_META_PATH)
 def verificar_webhook(request: Request):
     params = request.query_params
     if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == VERIFY_TOKEN:
@@ -160,7 +165,7 @@ def verificar_webhook(request: Request):
         return Response(content=params.get("hub.challenge"), media_type="text/plain")
     return Response(content="Error de verificación", status_code=403)
 
-@app.post("/webhook")
+@app.post(WEBHOOK_META_PATH)
 async def recibir_mensaje_real(request: Request, background_tasks: BackgroundTasks):
     if not await verificar_firma(request):
         return Response(content="Firma de webhook inválida", status_code=401)
@@ -217,7 +222,7 @@ async def recibir_mensaje_real(request: Request, background_tasks: BackgroundTas
         print(f"❌ Error procesando JSON: {e}")
     return {"status": "success"}
 
-@app.post("/webhook/chatwoot")
+@app.post(WEBHOOK_CHATWOOT_PATH)
 async def recibir_webhook_chatwoot(request: Request):
     """Escucha eventos de Chatwoot (ej. resolución de conversaciones) para reactivar el bot."""
     try:
