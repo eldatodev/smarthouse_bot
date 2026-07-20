@@ -148,6 +148,10 @@ async def manejar_flujo_async(wid: str, mensaje: str, nombre: str):
 
 # --- ENDPOINTS ---
 
+@app.get("/")
+def leer_ruta():
+    return {"status": "ok", "mensaje": "Motor Smarthouse-Bot Activo"}
+
 @app.get("/webhook")
 def verificar_webhook(request: Request):
     params = request.query_params
