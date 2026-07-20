@@ -147,6 +147,61 @@ async def manejar_flujo_async(wid: str, mensaje: str, nombre: str):
                     print(f"📞 [NOTIFICACIÓN ASESOR] Notificando nuevo lead al asesor comercial: {asesor_number}")
                     await enviar_mensaje_whatsapp_real(f"{asesor_number}@c.us", msg_asesor)
 
+async def manejar_flujo_chatwoot_async(wid: str, mensaje: str, nombre: str, conversation_id: Optional[int]):
+    """Procesamiento en background para mensajes provenientes de Chatwoot."""
+    resultado = await procesar_mensaje(wid, mensaje, nombre)
+    if resultado and "texto" in resultado:
+        texto_bot = resultado["texto"]
+        
+        # 1. Enviar respuesta saliente del bot a Chatwoot si se dispone de conversation_id
+        if conversation_id:
+            chatwoot = ChatwootClient()
+            await chatwoot.enviar_mensaje_bot(conversation_id, texto_bot)
+        else:
+            await enviar_mensaje_whatsapp_real(wid, texto_bot)
+            
+        # 2. Si el lead califica y requiere atención humana
+        if resultado.get("necesita_agente"):
+            db = MotosDAO()
+            cliente = await asyncio.to_thread(db.obtener_cliente, wid)
+            if cliente:
+                wid_limpio = wid.replace("@c.us", "")
+                enlace_chat = f"https://wa.me/{wid_limpio}"
+                
+                info_adicional = ""
+                if cliente.get("gasto_transporte"):
+                    info_adicional = (
+                        f"\n📍 *Ciudad:* {cliente.get('ciudad', '').title()}"
+                        f"\n💳 *Cupo Recibo:* {cliente.get('tipo_cupo')}"
+                        f"\n🚌 *Gasto Transporte:* {cliente.get('gasto_transporte')}"
+                    )
+                elif cliente.get("tiempo_entrega"):
+                    info_adicional = (
+                        f"\n📍 *Ciudad:* {cliente.get('ciudad', '').title()}"
+                        f"\n💳 *Cupo Recibo:* {cliente.get('tipo_cupo')}"
+                        f"\n⏱️ *Tiempo Entrega:* {cliente.get('tiempo_entrega')}"
+                    )
+                    
+                msg_asesor = (
+                    f"🔔 *¡NUEVO LEAD CALIFICADO!*\n\n"
+                    f"👤 *Cliente:* {cliente.get('nombre', nombre)}\n"
+                    f"📱 *Numero:* {wid_limpio}"
+                    f"{info_adicional}\n\n"
+                    f"💬 *Chat Directo:* {enlace_chat}"
+                )
+                
+                if conversation_id:
+                    chatwoot = ChatwootClient()
+                    await chatwoot.enviar_nota_privada(conversation_id, msg_asesor)
+
+                await asyncio.to_thread(db.guardar_progreso_cliente, wid, estado="ATENCION_MANUAL")
+                print(f"🤝 [HANDOVER] Lead {wid} derivado a Chatwoot y puesto en ATENCION_MANUAL.")
+
+                asesor_number = os.getenv("ASESOR_NUMBER")
+                if asesor_number:
+                    print(f"📞 [NOTIFICACIÓN ASESOR] Notificando nuevo lead al asesor comercial: {asesor_number}")
+                    await enviar_mensaje_whatsapp_real(f"{asesor_number}@c.us", msg_asesor)
+
 # --- ENDPOINTS ---
 
 @app.get("/")
@@ -228,13 +283,13 @@ async def recibir_mensaje_real(request: Request, background_tasks: BackgroundTas
 @app.post("/webhook/chatwoot/")
 @app.post(WEBHOOK_CHATWOOT_PATH)
 @app.post(f"{WEBHOOK_CHATWOOT_PATH}/")
-async def recibir_webhook_chatwoot(request: Request):
-    """Escucha eventos de Chatwoot (ej. resolución de conversaciones) para reactivar el bot."""
+async def recibir_webhook_chatwoot(request: Request, background_tasks: BackgroundTasks):
+    """Escucha eventos de Chatwoot (mensajes entrantes y resolución) para ejecutar el chatbot."""
     try:
         datos = await request.json()
         event = datos.get("event")
-        
-        # Eventos cuando la conversación es resuelta o reabierta
+
+        # 1. Eventos de resolución o cambio de estado para reactivar el bot
         if event in ("conversation_resolved", "conversation_status_changed"):
             meta = datos.get("meta", {})
             sender = datos.get("sender", {})
@@ -254,6 +309,45 @@ async def recibir_webhook_chatwoot(request: Request):
                     await asyncio.to_thread(db.cerrar_y_crear_nueva_sesion, wid)
                     await asyncio.to_thread(db.guardar_progreso_cliente, wid, estado="INICIO")
                     print(f"🔄 [CHATWOOT WEBHOOK] Conversación resuelta en Chatwoot para {wid}. Bot reactivado en estado INICIO.")
+            return {"status": "success"}
+
+        # 2. Filtrado inicial de mensajes entrantes del usuario
+        if event == "message_created":
+            message_type = datos.get("message_type")
+            is_private = datos.get("private", False)
+            content = (datos.get("content") or "").strip()
+
+            # Procesar únicamente si es mensaje entrante del usuario (incoming), no es nota privada y tiene texto
+            if message_type == "incoming" and not is_private and content:
+                conversation = datos.get("conversation", {})
+                conversation_id = conversation.get("id") or datos.get("conversation_id")
+                
+                sender = datos.get("sender", {})
+                phone_number = sender.get("phone_number")
+                nombre = sender.get("name") or "Cliente"
+
+                if not phone_number and "meta" in conversation:
+                    phone_number = conversation["meta"].get("sender", {}).get("phone_number")
+
+                if phone_number:
+                    wid_limpio = phone_number.replace("+", "").replace("@c.us", "")
+                    wid = f"{wid_limpio}@c.us"
+
+                    # Control de Handover: Verificar si la conversación está asignada a un agente o en atención humana
+                    assignee = conversation.get("assignee") or conversation.get("meta", {}).get("assignee")
+                    status = conversation.get("status")
+                    
+                    db = MotosDAO()
+                    cliente = await asyncio.to_thread(db.obtener_cliente, wid)
+
+                    # Si el cliente ya está en ATENCION_MANUAL en BD o asignado a un agente en Chatwoot
+                    if (cliente and cliente.get("estado") == "ATENCION_MANUAL") or (assignee is not None and status != "pending"):
+                        print(f"🤫 [SILENCIO CHATWOOT] Cliente {wid} en atención humana o asignado a un agente.")
+                        return {"status": "ignored_handover"}
+
+                    # Ejecutar el motor conversacional en background enviando respuesta a Chatwoot
+                    background_tasks.add_task(manejar_flujo_chatwoot_async, wid, content, nombre, conversation_id)
+
     except Exception as e:
         print(f"❌ Error procesando webhook de Chatwoot: {e}")
     return {"status": "success"}

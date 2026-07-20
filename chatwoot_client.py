@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any
 
 CHATWOOT_URL = os.getenv("CHATWOOT_URL", "").rstrip("/")
 CHATWOOT_ACCOUNT_ID = os.getenv("CHATWOOT_ACCOUNT_ID", "1")
-CHATWOOT_TOKEN = os.getenv("CHATWOOT_TOKEN", "")
+CHATWOOT_TOKEN = os.getenv("CHATWOOT_BOT_TOKEN") or os.getenv("CHATWOOT_TOKEN", "")
 CHATWOOT_INBOX_ID = os.getenv("CHATWOOT_INBOX_ID", "1")
 
 class ChatwootClient:
@@ -113,4 +113,29 @@ class ChatwootClient:
                     print(f"❌ Error enviando nota privada en Chatwoot ({res.status_code}): {res.text}")
         except Exception as e:
             print(f"❌ Error creando nota privada en Chatwoot: {e}")
+        return False
+
+    async def enviar_mensaje_bot(self, conversation_id: int, content: str) -> bool:
+        """Envía una respuesta saliente pública del bot a la conversación de Chatwoot."""
+        if not self.base_url or not self.token or not conversation_id:
+            return False
+
+        url = f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/messages"
+        headers = self._headers()
+        payload = {
+            "content": content,
+            "message_type": "outgoing",
+            "private": False
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                res = await client.post(url, json=payload, headers=headers)
+                if res.status_code in (200, 201):
+                    print(f"📤 [CHATWOOT BOT] Mensaje del bot enviado a conversación {conversation_id}")
+                    return True
+                else:
+                    print(f"❌ Error enviando mensaje del bot a Chatwoot ({res.status_code}): {res.text}")
+        except Exception as e:
+            print(f"❌ Error enviando mensaje del bot a Chatwoot: {e}")
         return False
