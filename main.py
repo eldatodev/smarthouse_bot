@@ -46,13 +46,17 @@ async def verificar_firma(request: Request) -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Iniciar bucle proactivo como tarea en segundo plano al arrancar la aplicación
-    task = asyncio.create_task(verificar_inactividad_proactiva_loop(enviar_mensaje_whatsapp_real))
-    print("🚀 Motor proactivo de inactividad iniciado en background.")
+    # Logs informativos de URLs activas al arrancar
     print(f"🔗 Webhook Meta activo en: {BASE_URL}{WEBHOOK_META_PATH}")
     print(f"🔗 Webhook Chatwoot activo en: {BASE_URL}{WEBHOOK_CHATWOOT_PATH}")
+    
+    # Iniciar motor proactivo de inactividad como tarea en segundo plano
+    task = asyncio.create_task(verificar_inactividad_proactiva_loop(enviar_mensaje_whatsapp_real))
+    print("🚀 Motor proactivo de inactividad iniciado en background.")
+    
     yield
-    # Cancelar tarea al apagar la aplicación
+    
+    # Cancelación limpia de la tarea al apagar la aplicación (Shutdown)
     task.cancel()
     try:
         await task
