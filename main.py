@@ -10,10 +10,7 @@ from chatbot_logic import procesar_mensaje, verificar_inactividad_proactiva_loop
 from database import MotosDAO
 from chatwoot_client import ChatwootClient
 
-# Forzar la carga de variables de entorno
-basedir = os.path.dirname(os.path.abspath(__file__))
-ruta_env = os.path.join(basedir, ".env")
-load_dotenv(dotenv_path=ruta_env)
+load_dotenv()
 
 # Carga de variables de entorno
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
