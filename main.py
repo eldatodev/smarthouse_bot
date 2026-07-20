@@ -20,7 +20,12 @@ PORT_APP = int(os.getenv("PORT", 8050))
 APP_SECRET = os.getenv("APP_SECRET")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8050")
 WEBHOOK_META_PATH = os.getenv("WEBHOOK_META_PATH", "/webhook")
+if not WEBHOOK_META_PATH.startswith("/"):
+    WEBHOOK_META_PATH = "/" + WEBHOOK_META_PATH
+
 WEBHOOK_CHATWOOT_PATH = os.getenv("WEBHOOK_CHATWOOT_PATH", "/webhook/chatwoot")
+if not WEBHOOK_CHATWOOT_PATH.startswith("/"):
+    WEBHOOK_CHATWOOT_PATH = "/" + WEBHOOK_CHATWOOT_PATH
 
 async def verificar_firma(request: Request) -> bool:
     """Verifica que la petición provenga realmente de los servidores de Meta."""
@@ -148,7 +153,10 @@ async def manejar_flujo_async(wid: str, mensaje: str, nombre: str):
 def leer_ruta():
     return {"status": "ok", "mensaje": "Motor Smarthouse-Bot Activo"}
 
+@app.get("/webhook")
+@app.get("/webhook/")
 @app.get(WEBHOOK_META_PATH)
+@app.get(f"{WEBHOOK_META_PATH}/")
 def verificar_webhook(request: Request):
     params = request.query_params
     if params.get("hub.mode") == "subscribe" and params.get("hub.verify_token") == VERIFY_TOKEN:
@@ -156,7 +164,10 @@ def verificar_webhook(request: Request):
         return Response(content=params.get("hub.challenge"), media_type="text/plain")
     return Response(content="Error de verificación", status_code=403)
 
+@app.post("/webhook")
+@app.post("/webhook/")
 @app.post(WEBHOOK_META_PATH)
+@app.post(f"{WEBHOOK_META_PATH}/")
 async def recibir_mensaje_real(request: Request, background_tasks: BackgroundTasks):
     if not await verificar_firma(request):
         return Response(content="Firma de webhook inválida", status_code=401)
@@ -213,7 +224,10 @@ async def recibir_mensaje_real(request: Request, background_tasks: BackgroundTas
         print(f"❌ Error procesando JSON: {e}")
     return {"status": "success"}
 
+@app.post("/webhook/chatwoot")
+@app.post("/webhook/chatwoot/")
 @app.post(WEBHOOK_CHATWOOT_PATH)
+@app.post(f"{WEBHOOK_CHATWOOT_PATH}/")
 async def recibir_webhook_chatwoot(request: Request):
     """Escucha eventos de Chatwoot (ej. resolución de conversaciones) para reactivar el bot."""
     try:
