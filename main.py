@@ -46,22 +46,15 @@ async def verificar_firma(request: Request) -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Logs informativos de URLs activas al arrancar
     print(f"🔗 Webhook Meta activo en: {BASE_URL}{WEBHOOK_META_PATH}")
     print(f"🔗 Webhook Chatwoot activo en: {BASE_URL}{WEBHOOK_CHATWOOT_PATH}")
     
-    # Iniciar motor proactivo de inactividad como tarea en segundo plano
-    task = asyncio.create_task(verificar_inactividad_proactiva_loop(enviar_mensaje_whatsapp_real))
-    print("🚀 Motor proactivo de inactividad iniciado en background.")
+    tarea_motor = asyncio.create_task(verificar_inactividad_proactiva_loop(enviar_mensaje_whatsapp_real))
+    print("🚀 Motor de Inactividad Proactiva inicializado con éxito.")
     
     yield
     
-    # Cancelación limpia de la tarea al apagar la aplicación (Shutdown)
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    tarea_motor.cancel()
 
 app = FastAPI(title="Chatbot Motos Webhook API", lifespan=lifespan)
 
@@ -281,6 +274,5 @@ if __name__ == "__main__":
     if RUN_SIMULATOR:
         thread_consola = threading.Thread(target=ejecutar_bucle_simulador, daemon=True)
         thread_consola.start()
-        print("🎮 Simulador de consola iniciado.")
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT_APP)
