@@ -1,5 +1,4 @@
 import asyncio
-import threading
 import os
 import httpx
 import hmac
@@ -22,7 +21,6 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "token_por_defecto_123")
 PORT_APP = int(os.getenv("PORT", 8050))
 APP_SECRET = os.getenv("APP_SECRET")
-RUN_SIMULATOR = os.getenv("RUN_SIMULATOR", "False").lower() in ("true", "1", "t")
 BASE_URL = os.getenv("BASE_URL", "http://localhost:8050")
 WEBHOOK_META_PATH = os.getenv("WEBHOOK_META_PATH", "/webhook")
 WEBHOOK_CHATWOOT_PATH = os.getenv("WEBHOOK_CHATWOOT_PATH", "/webhook/chatwoot")
@@ -50,7 +48,6 @@ async def lifespan(app: FastAPI):
     print(f"🔗 Webhook Chatwoot activo en: {BASE_URL}{WEBHOOK_CHATWOOT_PATH}")
     
     tarea_motor = asyncio.create_task(verificar_inactividad_proactiva_loop(enviar_mensaje_whatsapp_real))
-    print("🚀 Motor de Inactividad Proactiva inicializado con éxito.")
     
     yield
     
@@ -250,29 +247,6 @@ async def recibir_webhook_chatwoot(request: Request):
         print(f"❌ Error procesando webhook de Chatwoot: {e}")
     return {"status": "success"}
 
-# --- SIMULADOR CONSOLA ---
-
-def ejecutar_bucle_simulador():
-    asyncio.run(simulador_consola())
-
-async def simulador_consola():
-    WID_PRUEBA = "573019998877@c.us"
-    NOMBRE_PRUEBA = "Carlos"
-    db = MotosDAO()
-    await asyncio.to_thread(db.cerrar_y_crear_nueva_sesion, WID_PRUEBA)
-    inicio = await procesar_mensaje(WID_PRUEBA, "", NOMBRE_PRUEBA)
-    print(f"\n🤖 Bot: {inicio['texto']}\n")
-    while True:
-        try:
-            msg = input("👤 Tú: ")
-            if msg.lower() in ["salir", "exit"]: break
-            res = await procesar_mensaje(WID_PRUEBA, msg, NOMBRE_PRUEBA)
-            print(f"\n🤖 Bot: {res['texto']}\n")
-        except: break
-
 if __name__ == "__main__":
-    if RUN_SIMULATOR:
-        thread_consola = threading.Thread(target=ejecutar_bucle_simulador, daemon=True)
-        thread_consola.start()
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT_APP)
+    uvicorn.run("main:app", host="0.0.0.0", port=PORT_APP, reload=False)
