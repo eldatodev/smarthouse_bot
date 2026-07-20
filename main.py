@@ -3,6 +3,7 @@ import os
 import httpx
 import hmac
 import hashlib
+from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Response, BackgroundTasks
 from dotenv import load_dotenv
