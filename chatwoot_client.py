@@ -15,9 +15,10 @@ class ChatwootClient:
         self.token = CHATWOOT_TOKEN
         self.inbox_id = int(CHATWOOT_INBOX_ID) if CHATWOOT_INBOX_ID.isdigit() else 1
 
-    def _headers() -> Dict[str, str]:
+    def _headers(self) -> Dict[str, str]:
+        token = self.token or CHATWOOT_TOKEN
         return {
-            "api_access_token": CHATWOOT_TOKEN,
+            "api_access_token": token,
             "Content-Type": "application/json"
         }
 
@@ -118,6 +119,7 @@ class ChatwootClient:
     async def enviar_mensaje_bot(self, conversation_id: int, content: str) -> bool:
         """Envía una respuesta saliente pública del bot a la conversación de Chatwoot."""
         if not self.base_url or not self.token or not conversation_id:
+            print(f"⚠️ [CHATWOOT BOT] Configuración o conversación no válida para enviar respuesta (URL: '{self.base_url}', Token: {bool(self.token)}, Conversation ID: {conversation_id})")
             return False
 
         url = f"{self.base_url}/api/v1/accounts/{self.account_id}/conversations/{conversation_id}/messages"
@@ -132,7 +134,7 @@ class ChatwootClient:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 res = await client.post(url, json=payload, headers=headers)
                 if res.status_code in (200, 201):
-                    print(f"📤 [CHATWOOT BOT] Mensaje del bot enviado a conversación {conversation_id}")
+                    print(f"📤 [CHATWOOT BOT] Mensaje del bot enviado exitosamente a conversación {conversation_id}")
                     return True
                 else:
                     print(f"❌ Error enviando mensaje del bot a Chatwoot ({res.status_code}): {res.text}")
