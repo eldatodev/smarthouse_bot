@@ -1,7 +1,9 @@
 # test_bot.py
 import asyncio
-import os
 import sys
+import os
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 # Mockear el envío de mensajes a WhatsApp para evitar llamadas reales de red en el test
 import main
