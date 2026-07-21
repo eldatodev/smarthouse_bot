@@ -19,7 +19,8 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "token_por_defecto_123")
 PORT_APP = int(os.getenv("PORT", 8050))
 APP_SECRET = os.getenv("APP_SECRET")
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8050")
+BASE_URL = os.getenv("BASE_URL", "http://localhost:8050").rstrip("/")
+BASE_URL_CLEAN = BASE_URL.rstrip('/')
 WEBHOOK_META_PATH = os.getenv("WEBHOOK_META_PATH", "/webhook")
 if not WEBHOOK_META_PATH.startswith("/"):
     WEBHOOK_META_PATH = "/" + WEBHOOK_META_PATH
@@ -47,8 +48,8 @@ async def verificar_firma(request: Request) -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print(f"🔗 Webhook Meta activo en: {BASE_URL}{WEBHOOK_META_PATH}")
-    print(f"🔗 Webhook Chatwoot activo en: {BASE_URL}{WEBHOOK_CHATWOOT_PATH}")
+    print(f"🔗 Webhook Meta activo en: {BASE_URL_CLEAN}{WEBHOOK_META_PATH}")
+    print(f"🔗 Webhook Chatwoot activo en: {BASE_URL_CLEAN}{WEBHOOK_CHATWOOT_PATH}")
     
     tarea_motor = asyncio.create_task(verificar_inactividad_proactiva_loop(enviar_mensaje_whatsapp_real))
     
